@@ -359,16 +359,9 @@ impl HeadlessServer {
             let Some(target) = self.shell_target_for_client(client_id) else {
                 return false;
             };
-            let Some(tab) = self
-                .app
-                .state
-                .workspaces
-                .get(target.workspace_index)
-                .and_then(|workspace| workspace.tabs.get(target.tab_index))
-            else {
-                return false;
-            };
-            tab.panes.contains_key(&pane_id) && (!tab.zoomed || tab.layout.focused() == pane_id)
+            // Reuse the input-visibility rule so output and input agree on what
+            // a client can see, including pinned panes drawn over its tab.
+            self.shell_client_views_pane(client_id, target.workspace_index, pane_id)
         })
     }
 

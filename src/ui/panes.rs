@@ -386,9 +386,9 @@ pub(super) fn compute_pinned_pane_infos(
                 inner_rect,
                 scrollbar_rect,
                 borders,
-                // A pinned pane is never the active tab's focused pane; focus
-                // follows the usual rules and is applied by the caller.
-                is_focused: false,
+                // A pinned pane can hold focus in place, so it must render as
+                // focused (cursor and border) when it owns workspace focus.
+                is_focused: workspace.focused_pane_id() == Some(*pane_id),
             })
         })
         .collect()
@@ -458,13 +458,15 @@ pub(super) fn compute_pane_infos_for_tab(
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) -> Vec<PaneInfo> {
-    let Some(tab) = app
-        .workspaces
-        .get(ws_idx)
-        .and_then(|workspace| workspace.tabs.get(tab_idx))
-    else {
+    let Some(workspace) = app.workspaces.get(ws_idx) else {
         return Vec::new();
     };
+    let Some(tab) = workspace.tabs.get(tab_idx) else {
+        return Vec::new();
+    };
+    // Focus may sit on a pinned pane from another tab; this tab's own panes
+    // must then render unfocused.
+    let workspace_focus = workspace.focused_pane_id();
 
     let multi_pane = tab.layout.pane_count() > 1;
 
@@ -496,7 +498,9 @@ pub(super) fn compute_pane_infos_for_tab(
             inner_rect,
             scrollbar_rect,
             borders,
-            is_focused: true,
+            // An out-of-tab pinned pane may own focus, in which case this
+            // pane must not also render as focused.
+            is_focused: workspace_focus == Some(focused_id),
         }];
     }
 
@@ -531,6 +535,11 @@ pub(super) fn compute_pane_infos_for_tab(
 
         info.inner_rect = inner_rect;
         info.scrollbar_rect = scrollbar_rect;
+        // Layout focus is per-tab; an out-of-tab pinned pane holding focus
+        // must leave every pane here unfocused.
+        if info.is_focused && workspace_focus != Some(info.id) {
+            info.is_focused = false;
+        }
     }
 
     pane_infos
@@ -583,6 +592,18 @@ pub(super) fn render_panes(
 
     for info in pane_infos {
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
+            // A pinned pane from another tab normally has its rect reserved out
+            // of the active tab's area, so nothing is laid out underneath it.
+            // When the rect cannot be carved out it is overlaid instead, so
+            // clear first: any cell this terminal does not paint would
+            // otherwise show the pane beneath it.
+            if !ws
+                .tabs
+                .get(target.tab_index)
+                .is_some_and(|tab| tab.panes.contains_key(&info.id))
+            {
+                frame.render_widget(ratatui::widgets::Clear, info.rect);
+            }
             let show_cursor = info.is_focused
                 && !pane_is_scrolled_back(rt)
                 && app.pane_exposes_host_cursor(ws_idx, info.id);

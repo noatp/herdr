@@ -1602,6 +1602,169 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     shutdown_test_runtimes(&mut server);
 }
 
+/// Focusing a pinned pane must not drag the client's view to its home tab:
+/// the pane is visible in place, and following it would defeat the point.
+#[tokio::test]
+async fn focusing_a_pinned_pane_keeps_the_client_viewing_its_current_tab() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("pinned-view");
+    let first_pane = workspace.tabs[0].root_pane;
+    let second_tab = workspace.test_add_tab(Some("second"));
+    let second_pane = workspace.tabs[second_tab].root_pane;
+    workspace.insert_test_runtime(
+        first_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
+    );
+    workspace.insert_test_runtime(
+        second_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
+    );
+    // The pane in the second tab is pinned, so it renders over whichever tab
+    // the client is viewing.
+    workspace.pane_state_mut(second_pane).unwrap().pinned = true;
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+
+    let first_tab_id = server.app.public_tab_id(0, 0).unwrap();
+    let pinned_pane_id = server.app.public_pane_id(0, second_pane).unwrap();
+
+    let (control, _render) = connect_matching_test_shell(&mut server, 11);
+    let _ = control.recv().expect("snapshot");
+    assert!(server.focus_shell_client_on_tab(11, &first_tab_id));
+
+    let followed = server.apply_shell_navigation_request(
+        11,
+        &api::schema::Method::PaneFocus(api::schema::PaneTarget {
+            pane_id: pinned_pane_id,
+        }),
+    );
+    assert!(
+        !followed,
+        "a pinned pane must not move the client's view to its home tab"
+    );
+    assert_eq!(
+        server
+            .clients
+            .get(&11)
+            .and_then(|client| client.shell_location.as_ref())
+            .and_then(|location| location.focused_tab_id()),
+        Some(first_tab_id.as_str()),
+        "the client keeps viewing the tab it was on"
+    );
+
+    // An unpinned pane in another tab still pulls the view to that tab.
+    server.app.state.workspaces[0]
+        .pane_state_mut(second_pane)
+        .unwrap()
+        .pinned = false;
+    let second_pane_id = server.app.public_pane_id(0, second_pane).unwrap();
+    assert!(
+        server.apply_shell_navigation_request(
+            11,
+            &api::schema::Method::PaneFocus(api::schema::PaneTarget {
+                pane_id: second_pane_id,
+            }),
+        ),
+        "an ordinary pane in another tab still moves the view"
+    );
+
+    shutdown_test_runtimes(&mut server);
+}
+
+/// A pinned pane is drawn over the viewed tab, so the client is genuinely
+/// looking at it and its keystrokes must be delivered rather than dropped.
+#[tokio::test]
+async fn a_pinned_pane_accepts_input_from_a_client_viewing_another_tab() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("pinned-input");
+    let first_pane = workspace.tabs[0].root_pane;
+    let second_tab = workspace.test_add_tab(Some("second"));
+    let second_pane = workspace.tabs[second_tab].root_pane;
+    workspace.insert_test_runtime(
+        first_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
+    );
+    workspace.insert_test_runtime(
+        second_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
+    );
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+
+    let first_tab_id = server.app.public_tab_id(0, 0).unwrap();
+    let (control, _render) = connect_matching_test_shell(&mut server, 12);
+    let _ = control.recv().expect("snapshot");
+    assert!(server.focus_shell_client_on_tab(12, &first_tab_id));
+
+    // Unpinned: the pane in the other tab is not visible to this client.
+    assert!(
+        !server.shell_client_views_pane(12, 0, second_pane),
+        "an unpinned pane in another tab is not visible"
+    );
+
+    server.app.state.workspaces[0]
+        .pane_state_mut(second_pane)
+        .unwrap()
+        .pinned = true;
+    assert!(
+        server.shell_client_views_pane(12, 0, second_pane),
+        "a pinned pane is drawn over the viewed tab, so input must reach it"
+    );
+    // The viewed tab's own panes stay visible.
+    assert!(server.shell_client_views_pane(12, 0, first_pane));
+
+    shutdown_test_runtimes(&mut server);
+}
+
+/// Output from a pinned pane must mark it render-visible, or typed characters
+/// sit in the terminal until an unrelated event forces a frame.
+#[tokio::test]
+async fn pinned_pane_output_reaches_a_client_viewing_another_tab() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("pinned-render");
+    let first_pane = workspace.tabs[0].root_pane;
+    let second_tab = workspace.test_add_tab(Some("second"));
+    let second_pane = workspace.tabs[second_tab].root_pane;
+    workspace.insert_test_runtime(
+        first_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
+    );
+    workspace.insert_test_runtime(
+        second_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
+    );
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+
+    let first_tab_id = server.app.public_tab_id(0, 0).unwrap();
+    let (control, _render) = connect_matching_test_shell(&mut server, 13);
+    let _ = control.recv().expect("snapshot");
+    assert!(server.focus_shell_client_on_tab(13, &first_tab_id));
+
+    let sources = HashSet::from([second_pane]);
+    assert!(
+        !server.pty_sources_visible_to_any_render_target(&sources),
+        "an unpinned pane in another tab should not force renders"
+    );
+
+    server.app.state.workspaces[0]
+        .pane_state_mut(second_pane)
+        .unwrap()
+        .pinned = true;
+    assert!(
+        server.pty_sources_visible_to_any_render_target(&sources),
+        "a pinned pane is on screen, so its output must trigger a render"
+    );
+
+    shutdown_test_runtimes(&mut server);
+}
+
 #[tokio::test]
 async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
     let mut server = test_headless_server();

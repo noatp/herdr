@@ -331,8 +331,9 @@ impl App {
         let pane = ws.pane_state(pane_id)?;
         let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
         let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
+        // Focus is workspace-wide: a pinned pane can hold it from another tab,
+        // so do not require the pane to live in the active tab.
         let focused = self.state.active == Some(ws_idx)
-            && ws.active_tab == tab_idx
             && ws
                 .focused_pane_id()
                 .is_some_and(|focused| focused == pane_id);

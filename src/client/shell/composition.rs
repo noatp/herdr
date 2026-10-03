@@ -238,6 +238,11 @@ impl ClientShellState {
         self.hits.panes = surface
             .panes
             .iter()
+            // Panes are painted back-to-front, so a pinned pane overlaying the
+            // active tab comes last. Hit-testing takes the first match, which
+            // must be the topmost pane: iterate in reverse paint order so a
+            // click lands on the pane the user can actually see.
+            .rev()
             .map(|pane| PaneHit {
                 rect: Rect::new(
                     layout.pane_surface.x.saturating_add(pane.rect.x),

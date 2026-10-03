@@ -310,6 +310,11 @@ pub(super) fn render_shell(
         }
     }
     if layout.tab_bar.height > 0 {
+        let stale = state
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
+            .is_some_and(|endpoint| endpoint.status != ClientEndpointStatus::Online);
         render_tab_bar(
             buffer,
             layout.tab_bar,
@@ -318,6 +323,7 @@ pub(super) fn render_shell(
             state.tab_scroll,
             state.reveal_focused_tab,
             state.tab_drag_insert_index,
+            stale,
             &mut hits,
         );
     }

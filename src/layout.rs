@@ -718,9 +718,188 @@ fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
     }
 }
 
+/// Shrink `area` so it does not overlap any rect in `reserved`.
+///
+/// Pinned panes keep their own geometry and are composited next to the active
+/// tab, so the active tab must not be laid out under them: the incremental
+/// render path emits changed rows per pane with no notion of occlusion, so an
+/// overlapping pane would repaint over a pinned pane's cells and blank it.
+///
+/// Each reserved rect is removed by trimming `area` from whichever side loses
+/// the least space, which keeps the result a single rectangle. Reserved rects
+/// that do not touch an edge of `area` cannot be carved out this way and are
+/// reported so the caller can fall back to overlaying them.
+pub fn reserve_rects(area: Rect, reserved: &[Rect]) -> (Rect, Vec<Rect>) {
+    let pending = reserved
+        .iter()
+        .copied()
+        .filter(|rect| rects_overlap(area, *rect))
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return (area, Vec::new());
+    }
+    // Trimming one rect can be satisfied by several sides, and a locally
+    // largest trim can strand a later rect (keeping the right half when the
+    // pinned column lives there). Search the choices and keep the result with
+    // the most room for the active tab. Pinned panes are few, and the guard
+    // keeps a pathological count from exploding the search.
+    if pending.len() > 6 {
+        return reserve_rects_greedy(area, &pending);
+    }
+    best_reservation(area, &pending)
+}
+
+fn best_reservation(area: Rect, pending: &[Rect]) -> (Rect, Vec<Rect>) {
+    let Some(index) = pending.iter().position(|rect| rects_overlap(area, *rect)) else {
+        return (area, Vec::new());
+    };
+    let rect = pending[index];
+    let mut rest = pending.to_vec();
+    rest.remove(index);
+
+    let candidates = [
+        Rect::new(
+            rect.right(),
+            area.y,
+            area.right().saturating_sub(rect.right()),
+            area.height,
+        ),
+        Rect::new(area.x, area.y, rect.x.saturating_sub(area.x), area.height),
+        Rect::new(
+            area.x,
+            rect.bottom(),
+            area.width,
+            area.bottom().saturating_sub(rect.bottom()),
+        ),
+        Rect::new(area.x, area.y, area.width, rect.y.saturating_sub(area.y)),
+    ];
+    let mut best: Option<(Rect, Vec<Rect>)> = None;
+    for candidate in candidates {
+        if candidate.width == 0 || candidate.height == 0 {
+            continue;
+        }
+        let (remaining, mut unreservable) = best_reservation(candidate, &rest);
+        unreservable.retain(|other| *other != rect);
+        let score = (
+            u32::from(remaining.width) * u32::from(remaining.height),
+            usize::MAX - unreservable.len(),
+        );
+        let better = best.as_ref().is_none_or(|(best_rect, best_unreservable)| {
+            score
+                > (
+                    u32::from(best_rect.width) * u32::from(best_rect.height),
+                    usize::MAX - best_unreservable.len(),
+                )
+        });
+        if better {
+            best = Some((remaining, unreservable));
+        }
+    }
+    match best {
+        Some(result) => result,
+        None => {
+            // No side of this rect leaves room, so it must be overlaid.
+            let (remaining, mut unreservable) = best_reservation(area, &rest);
+            unreservable.push(rect);
+            (remaining, unreservable)
+        }
+    }
+}
+
+fn reserve_rects_greedy(area: Rect, reserved: &[Rect]) -> (Rect, Vec<Rect>) {
+    let mut remaining = area;
+    let mut unreservable = Vec::new();
+    let mut ordered = reserved.to_vec();
+    ordered.sort_by_key(|rect| std::cmp::Reverse(u32::from(rect.width) * u32::from(rect.height)));
+    for rect in ordered {
+        if remaining.width == 0 || remaining.height == 0 {
+            break;
+        }
+        if !rects_overlap(remaining, rect) {
+            continue;
+        }
+        let left = rect.x.saturating_sub(remaining.x);
+        let right = remaining.right().saturating_sub(rect.right());
+        let top = rect.y.saturating_sub(remaining.y);
+        let bottom = remaining.bottom().saturating_sub(rect.bottom());
+        let best = left.max(right).max(top).max(bottom);
+        if best == 0 {
+            unreservable.push(rect);
+            continue;
+        }
+        remaining = if best == right {
+            Rect::new(rect.right(), remaining.y, right, remaining.height)
+        } else if best == left {
+            Rect::new(remaining.x, remaining.y, left, remaining.height)
+        } else if best == bottom {
+            Rect::new(remaining.x, rect.bottom(), remaining.width, bottom)
+        } else {
+            Rect::new(remaining.x, remaining.y, remaining.width, top)
+        };
+    }
+    (remaining, unreservable)
+}
+
+fn rects_overlap(a: Rect, b: Rect) -> bool {
+    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserving_pinned_rects_leaves_a_non_overlapping_rect_for_the_active_tab() {
+        let area = Rect::new(0, 0, 100, 40);
+
+        // Nothing reserved: the active tab keeps the whole surface.
+        let (remaining, overlapping) = reserve_rects(area, &[]);
+        assert_eq!(remaining, area);
+        assert!(overlapping.is_empty());
+
+        // A right-hand column.
+        let right = Rect::new(70, 0, 30, 40);
+        let (remaining, overlapping) = reserve_rects(area, &[right]);
+        assert_eq!(remaining, Rect::new(0, 0, 70, 40));
+        assert!(overlapping.is_empty());
+        assert!(!rects_overlap(remaining, right));
+
+        // Two panes pinned on the right plus one along the bottom: the real
+        // layout this was reported with. The active tab must get the remaining
+        // top-left rectangle and overlap none of them.
+        let right_top = Rect::new(70, 0, 30, 20);
+        let right_bottom = Rect::new(70, 20, 30, 20);
+        let bottom = Rect::new(0, 30, 70, 10);
+        let (remaining, overlapping) = reserve_rects(area, &[right_top, right_bottom, bottom]);
+        assert!(
+            overlapping.is_empty(),
+            "an edge-aligned L of pinned panes is fully reservable"
+        );
+        for pinned in [right_top, right_bottom, bottom] {
+            assert!(
+                !rects_overlap(remaining, pinned),
+                "active tab {remaining:?} must not overlap pinned {pinned:?}"
+            );
+        }
+        assert_eq!(remaining, Rect::new(0, 0, 70, 30));
+    }
+
+    #[test]
+    fn a_pinned_rect_spanning_both_axes_is_reported_instead_of_starving_the_tab() {
+        let area = Rect::new(0, 0, 100, 40);
+        // Covers the full width and height, so no rectangle can remain.
+        let full = Rect::new(0, 0, 100, 40);
+        let (remaining, overlapping) = reserve_rects(area, &[full]);
+        assert_eq!(
+            remaining, area,
+            "the area is left intact so the active tab still renders"
+        );
+        assert_eq!(
+            overlapping,
+            vec![full],
+            "the caller is told to overlay this pane instead"
+        );
+    }
 
     #[test]
     fn split_paths_preserve_preorder_geometry_and_resize_targets() {

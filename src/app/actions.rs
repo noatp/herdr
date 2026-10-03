@@ -239,6 +239,18 @@ impl AppState {
             return false;
         }
 
+        // A pinned pane visible from another tab takes focus where it is, so
+        // clicking or targeting it does not pull the user to its home tab.
+        if self.active == Some(ws_idx) && tab_idx != ws.active_tab {
+            if let Some(ws) = self.workspaces.get_mut(ws_idx) {
+                if ws.focus_pinned_pane_in_place(pane_id) {
+                    self.previous_pane_focus = previous;
+                    self.mark_session_dirty();
+                    return true;
+                }
+            }
+        }
+
         self.switch_workspace_tab(ws_idx, tab_idx);
         if let Some(tab) = self
             .workspaces
@@ -246,6 +258,10 @@ impl AppState {
             .and_then(|ws| ws.tabs.get_mut(tab_idx))
         {
             tab.layout.focus_pane(pane_id);
+            if let Some(ws) = self.workspaces.get_mut(ws_idx) {
+                // Focus landed inside the active tab; drop any pinned override.
+                ws.clear_pinned_focus();
+            }
             self.previous_pane_focus = previous;
             self.mark_session_dirty();
             return true;

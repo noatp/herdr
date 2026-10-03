@@ -7,6 +7,104 @@ use crate::protocol::{
 use crossterm::event::MouseEvent;
 mod text_editing;
 
+#[test]
+fn an_agent_tab_renders_a_colored_status_dot_before_an_intact_label() {
+    use super::render::render_tab_bar;
+
+    let mut snap = snapshot();
+    snap.tabs[0].label = "build".into();
+    snap.tabs[0].agent_status = AgentStatus::Blocked;
+    let config = ClientShellConfig::from_config(&Config::default());
+
+    let area = Rect::new(0, 0, 40, 1);
+    let mut buffer = Buffer::empty(area);
+    let mut scroll = 0usize;
+    let mut reveal = false;
+    let mut hits = ShellHitMap::default();
+    render_tab_bar(
+        &mut buffer,
+        area,
+        &snap,
+        &config,
+        &mut scroll,
+        &mut reveal,
+        None,
+        false,
+        &mut hits,
+    );
+
+    let row: String = (0..area.width)
+        .map(|x| buffer[(x, 0)].symbol().to_string())
+        .collect();
+    assert!(
+        row.contains("● build"),
+        "dot must sit before an intact label, got {row:?}"
+    );
+
+    // The dot carries the status color, not the tab's label color.
+    let dot_x = row.find('●').expect("dot is drawn") as u16;
+    assert_eq!(
+        buffer[(dot_x, 0)].fg,
+        status_color(AgentStatus::Blocked, &config.palette),
+        "dot must use the blocked status color"
+    );
+
+    // A tab with no agent stays unmarked.
+    let mut plain = snapshot();
+    plain.tabs[0].label = "shell".into();
+    plain.tabs[0].agent_status = AgentStatus::Unknown;
+    let mut buffer = Buffer::empty(area);
+    let mut scroll = 0usize;
+    let mut reveal = false;
+    let mut hits = ShellHitMap::default();
+    render_tab_bar(
+        &mut buffer,
+        area,
+        &plain,
+        &config,
+        &mut scroll,
+        &mut reveal,
+        None,
+        false,
+        &mut hits,
+    );
+    let row: String = (0..area.width)
+        .map(|x| buffer[(x, 0)].symbol().to_string())
+        .collect();
+    assert!(row.contains("shell"), "label must render, got {row:?}");
+    assert!(
+        !row.contains('●') && !row.contains('○') && !row.contains('·'),
+        "a tab with no agent must not show a dot, got {row:?}"
+    );
+
+    // A disconnected endpoint dims its cached chrome; the dot must follow that
+    // convention instead of staying vivid and implying live status.
+    let mut buffer = Buffer::empty(area);
+    let mut scroll = 0usize;
+    let mut reveal = false;
+    let mut hits = ShellHitMap::default();
+    render_tab_bar(
+        &mut buffer,
+        area,
+        &snap,
+        &config,
+        &mut scroll,
+        &mut reveal,
+        None,
+        true,
+        &mut hits,
+    );
+    let row: String = (0..area.width)
+        .map(|x| buffer[(x, 0)].symbol().to_string())
+        .collect();
+    let dot_x = row.find('●').expect("dot is still drawn when stale") as u16;
+    assert_eq!(
+        buffer[(dot_x, 0)].fg,
+        config.palette.overlay0,
+        "a stale dot must be dimmed, not shown in its status color"
+    );
+}
+
 pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: "boot-1".into(),
@@ -133,6 +231,53 @@ fn surface() -> PaneSurfaceFrame {
         popup: None,
         graphics: crate::protocol::SurfaceGraphicsScene::default(),
     }
+}
+
+/// A pinned pane overlays the active tab's panes, so the hit map must list it
+/// before the pane underneath or clicks land on the hidden pane.
+#[test]
+fn pane_hit_regions_are_ordered_topmost_first_so_pinned_panes_are_clickable() {
+    let mut surface = surface();
+    // Simulate the server's paint order: the active tab's pane first, then a
+    // pinned pane from another tab drawn over its right half.
+    let underneath = surface.panes[0].clone();
+    let mut pinned = underneath.clone();
+    pinned.pane_id = "pinned_pane".into();
+    pinned.focused = false;
+    pinned.rect = SurfaceRect {
+        x: 2,
+        y: 0,
+        width: 2,
+        height: 2,
+    };
+    pinned.inner_rect = pinned.rect;
+    surface.panes = vec![underneath, pinned];
+
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.palette = Palette::terminal();
+    config.theme_runtime.auto_switch = false;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface);
+    state.compose(106, 20).expect("composed frame");
+
+    let overlap_cell = state
+        .hits
+        .panes
+        .iter()
+        .find(|hit| hit.pane_id == "pinned_pane")
+        .map(|hit| (hit.inner_rect.x, hit.inner_rect.y))
+        .expect("the pinned pane has a hit region");
+    let topmost = state
+        .hits
+        .panes
+        .iter()
+        .find(|hit| super::contains(hit.inner_rect, overlap_cell))
+        .expect("a pane covers the overlapping cell");
+    assert_eq!(
+        topmost.pane_id, "pinned_pane",
+        "the first hit over a shared cell must be the pane drawn on top"
+    );
 }
 
 fn frame_rows(frame: &FrameData) -> Vec<String> {

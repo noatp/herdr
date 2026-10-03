@@ -681,6 +681,24 @@ impl App {
         let Some(source_public_id) = self.public_pane_id(ws_idx, source_pane_id) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
+        // Directional movement is relative to the tab on screen. When focus
+        // sits on a pinned pane from another tab, navigate within the visible
+        // tab instead of jumping to the pinned pane's home tab.
+        let active_tab_idx = self.state.workspaces[ws_idx].active_tab;
+        let (tab_idx, source_pane_id) = if tab_idx != active_tab_idx
+            && self.state.workspaces[ws_idx].pinned_focus_is_live(source_pane_id)
+        {
+            match self.state.workspaces[ws_idx]
+                .tabs
+                .get(active_tab_idx)
+                .map(|tab| tab.layout.focused())
+            {
+                Some(visible_focus) => (active_tab_idx, visible_focus),
+                None => (tab_idx, source_pane_id),
+            }
+        } else {
+            (tab_idx, source_pane_id)
+        };
         let target =
             self.directional_pane_target(ws_idx, tab_idx, source_pane_id, params.direction);
         let reason = target

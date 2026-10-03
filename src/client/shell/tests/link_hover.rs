@@ -10,7 +10,18 @@ fn hover_state() -> ClientShellState {
 }
 
 fn hover_mouse(state: &ClientShellState, col: u16, row: u16) -> MouseEvent {
-    let pane = &state.hits.panes[0];
+    hover_mouse_for(state, "pane_1", col, row)
+}
+
+/// Hit regions are ordered topmost-first, so select the pane by id rather than
+/// by position.
+fn hover_mouse_for(state: &ClientShellState, pane_id: &str, col: u16, row: u16) -> MouseEvent {
+    let pane = state
+        .hits
+        .panes
+        .iter()
+        .find(|hit| hit.pane_id == pane_id)
+        .unwrap_or_else(|| panic!("pane {pane_id} has a hit region"));
     MouseEvent {
         kind: MouseEventKind::Moved,
         column: pane.inner_rect.x + col,

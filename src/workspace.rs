@@ -202,6 +202,10 @@ pub struct Workspace {
     pub(crate) next_public_tab_number: usize,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
+    /// Pinned pane from a non-active tab that currently holds focus, letting a
+    /// click into a pinned pane keep the user on the tab they are viewing.
+    /// Session-only, like the pin flag itself.
+    pub(crate) focused_pinned_pane: Option<PaneId>,
     #[cfg(test)]
     pub(crate) test_runtimes: HashMap<PaneId, TerminalRuntime>,
 }
@@ -267,6 +271,7 @@ impl Workspace {
             next_public_tab_number: 2,
             tabs: vec![tab],
             active_tab: 0,
+            focused_pinned_pane: None,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
         }
@@ -419,6 +424,7 @@ impl Workspace {
                 next_public_tab_number: 2,
                 tabs: vec![tab],
                 active_tab: 0,
+                focused_pinned_pane: None,
                 #[cfg(test)]
                 test_runtimes: HashMap::new(),
             },
@@ -1134,8 +1140,45 @@ impl Workspace {
         self.tabs.iter().find_map(|tab| tab.terminal_id(pane_id))
     }
 
+    /// The focused pane of this workspace.
+    ///
+    /// Normally the active tab's focused pane, but a pinned pane from another
+    /// tab may hold focus while staying in place, so a click into it does not
+    /// drag the user back to its home tab. The override is validated on every
+    /// read: it only applies while that pane is still pinned and still outside
+    /// the active tab, so unpinning, closing, or switching to its home tab
+    /// falls back to normal tab focus without needing explicit cleanup.
     pub fn focused_pane_id(&self) -> Option<PaneId> {
+        if let Some(pinned) = self.focused_pinned_pane {
+            if self.pinned_focus_is_live(pinned) {
+                return Some(pinned);
+            }
+        }
         self.active_tab().map(|tab| tab.layout.focused())
+    }
+
+    /// Whether `pane_id` may currently hold focus as an out-of-tab pinned pane.
+    pub(crate) fn pinned_focus_is_live(&self, pane_id: PaneId) -> bool {
+        self.tabs.iter().enumerate().any(|(tab_idx, tab)| {
+            tab_idx != self.active_tab && tab.panes.get(&pane_id).is_some_and(|pane| pane.pinned)
+        })
+    }
+
+    /// Give focus to a pinned pane without leaving the active tab.
+    ///
+    /// Returns false when the pane is not an out-of-tab pinned pane, in which
+    /// case the caller should use normal tab-switching focus.
+    pub(crate) fn focus_pinned_pane_in_place(&mut self, pane_id: PaneId) -> bool {
+        if !self.pinned_focus_is_live(pane_id) {
+            return false;
+        }
+        self.focused_pinned_pane = Some(pane_id);
+        true
+    }
+
+    /// Drop any out-of-tab pinned focus, returning focus to the active tab.
+    pub(crate) fn clear_pinned_focus(&mut self) {
+        self.focused_pinned_pane = None;
     }
 
     pub fn close_pane(&mut self, pane_id: PaneId) -> bool {
@@ -1238,6 +1281,7 @@ impl Workspace {
             next_public_tab_number: 2,
             tabs: vec![tab],
             active_tab: 0,
+            focused_pinned_pane: None,
             test_runtimes: HashMap::new(),
         }
     }
@@ -1484,6 +1528,61 @@ mod tests {
             ws.pinned_panes_outside_tab(other_tab),
             vec![(0, active_pane)]
         );
+    }
+
+    #[test]
+    fn a_pinned_pane_can_hold_focus_without_leaving_the_active_tab() {
+        let mut ws = Workspace::test_new("pinfocus");
+        let active_pane = ws.tabs[0].root_pane;
+        let other_tab = ws.test_add_tab(Some("other"));
+        let other_pane = ws.tabs[other_tab].root_pane;
+        ws.active_tab = 0;
+
+        // Focus defaults to the active tab's own pane.
+        assert_eq!(ws.focused_pane_id(), Some(active_pane));
+        // An unpinned pane in another tab cannot take focus in place.
+        assert!(!ws.focus_pinned_pane_in_place(other_pane));
+        assert_eq!(ws.focused_pane_id(), Some(active_pane));
+
+        ws.pane_state_mut(other_pane).unwrap().pinned = true;
+        assert!(ws.focus_pinned_pane_in_place(other_pane));
+        assert_eq!(
+            ws.focused_pane_id(),
+            Some(other_pane),
+            "a pinned pane holds focus while the active tab stays put"
+        );
+        assert_eq!(
+            ws.active_tab, 0,
+            "focusing a pinned pane must not switch tabs"
+        );
+
+        // Unpinning revokes the override without explicit cleanup.
+        ws.pane_state_mut(other_pane).unwrap().pinned = false;
+        assert_eq!(ws.focused_pane_id(), Some(active_pane));
+
+        // Switching to the pinned pane's home tab also ends the override: the
+        // pane is no longer "outside" the active tab.
+        ws.pane_state_mut(other_pane).unwrap().pinned = true;
+        assert!(ws.focus_pinned_pane_in_place(other_pane));
+        ws.active_tab = other_tab;
+        assert_eq!(ws.focused_pane_id(), Some(other_pane));
+        assert!(!ws.pinned_focus_is_live(other_pane));
+    }
+
+    #[test]
+    fn closing_a_focused_pinned_pane_returns_focus_to_the_active_tab() {
+        let mut ws = Workspace::test_new("pinclose");
+        let active_pane = ws.tabs[0].root_pane;
+        let other_tab = ws.test_add_tab(Some("other"));
+        let other_pane = ws.tabs[other_tab].root_pane;
+        ws.active_tab = 0;
+        ws.pane_state_mut(other_pane).unwrap().pinned = true;
+        assert!(ws.focus_pinned_pane_in_place(other_pane));
+
+        // Dropping the whole tab removes the pane; the stale override must not
+        // keep reporting a pane that no longer exists.
+        ws.tabs.remove(other_tab);
+        assert_eq!(ws.focused_pane_id(), Some(active_pane));
     }
 
     #[test]

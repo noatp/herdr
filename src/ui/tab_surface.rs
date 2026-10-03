@@ -66,15 +66,36 @@ pub(crate) fn compute_tab_surface_for(
             .get(target.tab_index)
     });
     // Pinned panes from other tabs of this workspace keep the geometry they
-    // have in their own tab, so the active tab is laid out in the full area and
-    // each pinned pane is drawn over it at its native position and size.
+    // have in their own tab. The active tab is then laid out in the space that
+    // is left over, never underneath them: the incremental render path emits
+    // changed rows per pane with no notion of occlusion, so an overlapping
+    // active pane would repaint over a pinned pane and blank it.
     let pinned = target.map_or_else(Vec::new, |target| {
         app.workspaces
             .get(target.workspace_index)
             .map(|workspace| workspace.pinned_panes_outside_tab(target.tab_index))
             .unwrap_or_default()
     });
-    let tab_area = area;
+    let pinned_infos = target.map_or_else(Vec::new, |target| {
+        compute_pinned_pane_infos(
+            app,
+            terminal_runtimes,
+            target.workspace_index,
+            &pinned,
+            area,
+            resize_panes,
+            cell_size,
+        )
+    });
+    let pinned_rects = pinned_infos
+        .iter()
+        .map(|info| info.rect)
+        .collect::<Vec<_>>();
+    let (tab_area, _overlapping) = crate::layout::reserve_rects(area, &pinned_rects);
+    // A pinned pane that cannot be carved out of the area (it spans the surface
+    // in both axes) keeps the previous overlay behavior rather than leaving the
+    // active tab with no room at all. It stays in `pinned_infos` either way;
+    // only the reserved area differs.
     let split_borders = tab
         .map(|tab| {
             if tab.zoomed {
@@ -95,17 +116,7 @@ pub(crate) fn compute_tab_surface_for(
             cell_size,
         )
     });
-    if let Some(target) = target {
-        pane_infos.extend(compute_pinned_pane_infos(
-            app,
-            terminal_runtimes,
-            target.workspace_index,
-            &pinned,
-            area,
-            resize_panes,
-            cell_size,
-        ));
-    }
+    pane_infos.extend(pinned_infos);
 
     TabSurfaceLayout {
         target,
@@ -299,14 +310,26 @@ mod tests {
         );
         // It really is the right half, not the whole surface.
         assert_eq!(actual.0.width, 50);
-        // The active tab still gets the full area, so its own pane is unaffected.
+        // The active tab is laid out in the space the pinned pane does not
+        // occupy, never underneath it: the incremental render path repaints
+        // rows per pane with no notion of occlusion, so an overlapping active
+        // pane would blank the pinned pane's cells on a full repaint.
         let active_root = app.workspaces[0].tabs[0].root_pane;
         let active = other_view
             .pane_infos
             .iter()
             .find(|info| info.id == active_root)
             .expect("active tab pane is drawn");
-        assert_eq!(active.rect.width, area.width);
+        assert_eq!(active.rect.width, area.width - 50);
+        let overlaps = active.rect.x < actual.0.right()
+            && actual.0.x < active.rect.right()
+            && active.rect.y < actual.0.bottom()
+            && actual.0.y < active.rect.bottom();
+        assert!(
+            !overlaps,
+            "active pane {:?} must not overlap pinned pane {:?}",
+            active.rect, actual.0
+        );
     }
 
     #[tokio::test]

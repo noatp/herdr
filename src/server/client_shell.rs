@@ -44,14 +44,14 @@ pub(super) fn snapshot_with_completions(
         .as_deref()
         .and_then(|tab_id| app.parse_tab_id(tab_id))
         .and_then(|(workspace_index, tab_index)| {
-            let pane_id = app
-                .state
-                .workspaces
-                .get(workspace_index)?
-                .tabs
-                .get(tab_index)?
-                .layout
-                .focused();
+            let workspace = app.state.workspaces.get(workspace_index)?;
+            // Prefer the workspace's focused pane: a pinned pane from another
+            // tab can hold focus in place, and input must route to it rather
+            // than to the visible tab's own focused pane.
+            let pane_id = workspace
+                .focused_pane_id()
+                .filter(|_| workspace.active_tab == tab_index)
+                .or_else(|| Some(workspace.tabs.get(tab_index)?.layout.focused()))?;
             app.public_pane_id(workspace_index, pane_id)
         })
         .or_else(|| snapshot.focused_pane_id.clone());

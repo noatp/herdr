@@ -12,6 +12,7 @@ pub(crate) fn render_tab_bar(
     tab_scroll: &mut usize,
     reveal_focused_tab: &mut bool,
     tab_drag_insert_index: Option<usize>,
+    stale: bool,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
@@ -25,7 +26,14 @@ pub(crate) fn render_tab_bar(
         .iter()
         .map(|tab| {
             let label = tab_label(tab);
-            display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
+            // Reserve the dot plus its trailing space so adding a status marker
+            // never eats into the label's own width.
+            let dot_width = tab_status_dot(tab, config.status_indicators)
+                .map_or(0, |dot| display_width(dot).saturating_add(1));
+            display_width(&label)
+                .saturating_add(dot_width)
+                .saturating_add(4)
+                .max(MIN_TAB_WIDTH)
         })
         .collect::<Vec<_>>();
     let content = tab_bar_content_area(snapshot, area);
@@ -114,15 +122,39 @@ pub(crate) fn render_tab_bar(
         } else {
             Style::default().fg(palette.overlay0).bg(palette.surface0)
         };
-        let padding = width.saturating_sub(display_width(&name));
+        let dot = tab_status_dot(tab, config.status_indicators);
+        // The dot occupies its own cell plus a separating space, immediately
+        // before the label, inside the tab's own padding.
+        let dot_width = dot.map_or(0, |dot| display_width(dot).saturating_add(1));
+        let padding = width
+            .saturating_sub(display_width(&name))
+            .saturating_sub(dot_width);
         let left = padding / 2;
         let text = format!(
-            "{empty:left$}{name}{empty:right_padding$}",
+            "{empty:left$}{empty:dot$}{name}{empty:right_padding$}",
             empty = "",
             left = left as usize,
+            dot = dot_width as usize,
             right_padding = padding.saturating_sub(left) as usize,
         );
         put_text(buffer, rect.x, rect.y, rect.width, &text, style);
+        if let Some(dot) = dot {
+            // Paint the dot into the blank cell reserved above, so it never
+            // overlaps the label and keeps its own status color.
+            let dot_x = rect.x.saturating_add(left);
+            put_text(
+                buffer,
+                dot_x,
+                rect.y,
+                rect.width.saturating_sub(left),
+                dot,
+                style.fg(if stale {
+                    palette.overlay0
+                } else {
+                    status_color(tab.agent_status, palette)
+                }),
+            );
+        }
         hits.tabs.push((rect, tab.tab_id.clone()));
         first_visible.get_or_insert(index);
         last_visible = Some(index);
@@ -371,6 +403,21 @@ fn max_tab_scroll(widths: &[u16], available: u16) -> usize {
     start
 }
 
+/// Status dot shown before a tab label, or `None` when the tab has no agent.
+///
+/// A tab with no detected agent aggregates to `Unknown`, which would render as
+/// a dim marker on every plain terminal tab; those stay unmarked so a dot in
+/// the tab bar always means a real agent.
+fn tab_status_dot(
+    tab: &ClientShellTab,
+    style: crate::config::StatusIndicatorStyle,
+) -> Option<&'static str> {
+    if tab.agent_status == crate::api::schema::AgentStatus::Unknown {
+        return None;
+    }
+    Some(status_icon(tab.agent_status, style))
+}
+
 fn tab_label(tab: &ClientShellTab) -> String {
     if tab.zoomed {
         format!("{} Z", tab.label)
@@ -381,7 +428,56 @@ fn tab_label(tab: &ClientShellTab) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::max_tab_scroll;
+    use super::{max_tab_scroll, tab_status_dot};
+    use crate::api::schema::AgentStatus;
+    use crate::config::StatusIndicatorStyle;
+    use crate::protocol::ClientShellTab;
+
+    fn tab(status: AgentStatus) -> ClientShellTab {
+        ClientShellTab {
+            tab_id: "w1:t1".into(),
+            workspace_id: "w1".into(),
+            number: 1,
+            label: "tab".into(),
+            custom_label: false,
+            zoomed: false,
+            focused: false,
+            agent_status: status,
+        }
+    }
+
+    #[test]
+    fn only_tabs_with_an_agent_get_a_status_dot() {
+        // A tab with no agent aggregates to Unknown; it must stay unmarked so a
+        // dot in the tab bar always means a real agent.
+        assert_eq!(
+            tab_status_dot(&tab(AgentStatus::Unknown), StatusIndicatorStyle::Dots),
+            None
+        );
+        for status in [
+            AgentStatus::Idle,
+            AgentStatus::Working,
+            AgentStatus::Blocked,
+            AgentStatus::Done,
+        ] {
+            assert!(
+                tab_status_dot(&tab(status), StatusIndicatorStyle::Dots).is_some(),
+                "{status:?} must show a dot"
+            );
+        }
+    }
+
+    #[test]
+    fn the_status_dot_follows_the_configured_indicator_style() {
+        assert_eq!(
+            tab_status_dot(&tab(AgentStatus::Blocked), StatusIndicatorStyle::Dots),
+            Some("●")
+        );
+        assert_eq!(
+            tab_status_dot(&tab(AgentStatus::Blocked), StatusIndicatorStyle::Symbols),
+            Some("×")
+        );
+    }
 
     #[test]
     fn trailing_scroll_limit_accounts_for_full_widths_and_separators() {

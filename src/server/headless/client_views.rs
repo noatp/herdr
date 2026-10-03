@@ -325,7 +325,7 @@ impl HeadlessServer {
             .map(str::to_owned)
     }
 
-    fn apply_shell_navigation_request(
+    pub(super) fn apply_shell_navigation_request(
         &mut self,
         client_id: u64,
         method: &api::schema::Method,
@@ -353,6 +353,12 @@ impl HeadlessServer {
                 .app
                 .parse_pane_id(&target.pane_id)
                 .and_then(|(workspace_index, pane_id)| {
+                    // A pinned pane is visible from other tabs and takes focus
+                    // in place, so following it to its home tab would drag the
+                    // client's view away from the tab the user is looking at.
+                    if self.app.state.workspaces[workspace_index].pinned_focus_is_live(pane_id) {
+                        return None;
+                    }
                     let tab_index = self.app.state.workspaces[workspace_index]
                         .find_tab_index_for_pane(pane_id)?;
                     self.app.public_tab_id(workspace_index, tab_index)
@@ -512,10 +518,24 @@ impl HeadlessServer {
             return false;
         };
         if tab.zoomed {
-            tab.layout.focused() == pane_id
-        } else {
-            tab.layout.pane_ids().contains(&pane_id)
+            if tab.layout.focused() == pane_id {
+                return true;
+            }
+        } else if tab.layout.pane_ids().contains(&pane_id) {
+            return true;
         }
+        // A pinned pane from another tab is drawn over this one, so the client
+        // really is looking at it and its input must be delivered.
+        self.app
+            .state
+            .workspaces
+            .get(workspace_index)
+            .is_some_and(|workspace| {
+                workspace
+                    .pinned_panes_outside_tab(target.tab_index)
+                    .iter()
+                    .any(|(_, pinned)| *pinned == pane_id)
+            })
     }
 
     fn finish_shell_tab_geometry_change(&mut self, start_pending_agent_resumes: bool) {
