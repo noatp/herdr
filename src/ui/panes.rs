@@ -321,7 +321,38 @@ fn stable_scrollbar_gutter(
     (inner_rect, scrollbar_rect)
 }
 
-/// Geometry for pinned panes shown over the active tab.
+/// Rects that pinned panes from other tabs occupy in `area`.
+///
+/// Cheap geometry only: no resizing or chrome work, so both the layout and the
+/// resize path can ask for it and stay consistent.
+pub(super) fn pinned_pane_rects(
+    app: &AppState,
+    ws_idx: usize,
+    pinned: &[(usize, crate::layout::PaneId)],
+    area: Rect,
+) -> Vec<Rect> {
+    let Some(workspace) = app.workspaces.get(ws_idx) else {
+        return Vec::new();
+    };
+    pinned
+        .iter()
+        .filter_map(|(tab_idx, pane_id)| {
+            let tab = workspace.tabs.get(*tab_idx)?;
+            let rect = if tab.zoomed {
+                (tab.layout.focused() == *pane_id).then_some(area)?
+            } else {
+                tab.layout
+                    .panes(area)
+                    .into_iter()
+                    .find(|info| info.id == *pane_id)
+                    .map(|info| info.rect)?
+            };
+            (rect.width > 0 && rect.height > 0).then_some(rect)
+        })
+        .collect()
+}
+
+/// Geometry for pinned panes shown alongside the active tab.
 ///
 /// Each pinned pane keeps the position and size it has in its own tab: the rect
 /// is taken from that tab's layout over the same `area`, so switching tabs does

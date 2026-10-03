@@ -140,12 +140,23 @@ pub(crate) fn resize_tab_surface(
     else {
         return;
     };
+    // Resize to the same area the tab is rendered in. Pinned panes from other
+    // tabs have their rects reserved out of the surface, so sizing the tab's
+    // PTYs to the full area would make the child processes believe they are
+    // larger than the box they are drawn in.
+    let pinned = app
+        .workspaces
+        .get(workspace_index)
+        .map(|workspace| workspace.pinned_panes_outside_tab(tab_index))
+        .unwrap_or_default();
+    let pinned_rects = crate::ui::panes::pinned_pane_rects(app, workspace_index, &pinned, area);
+    let (tab_area, _) = crate::layout::reserve_rects(area, &pinned_rects);
     resize_tab_panes(
         app,
         terminal_runtimes,
         workspace_index,
         tab,
-        area,
+        tab_area,
         cell_size,
     );
 }
@@ -249,6 +260,55 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Direction;
     use ratatui::Terminal;
+
+    #[tokio::test]
+    async fn resizing_a_tab_surface_uses_the_area_left_by_pinned_panes() {
+        // The resize path must reserve the same pinned rects the render path
+        // does. Sizing a tab's PTYs to the full surface while they are drawn in
+        // a reduced area makes the child process believe it has more rows and
+        // columns than are visible, so its output scrolls out of view.
+        let mut workspace = Workspace::test_new("pin-resize");
+        let other_tab = workspace.test_add_tab(Some("other"));
+        workspace.active_tab = other_tab;
+        let pinned = workspace.test_split(Direction::Horizontal);
+        workspace.insert_test_runtime(
+            pinned,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 8, b"PINNED"),
+        );
+        workspace.pane_state_mut(pinned).unwrap().pinned = true;
+        workspace.active_tab = 0;
+        let active_root = workspace.tabs[0].root_pane;
+        workspace.insert_test_runtime(
+            active_root,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 8, b"ACTIVE"),
+        );
+
+        let mut app = AppState::test_new();
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.selected = 0;
+
+        let area = Rect::new(0, 0, 100, 20);
+        let registry = TerminalRuntimeRegistry::new();
+        resize_tab_surface(&app, &registry, 0, 0, area, Default::default());
+
+        // The rendered rect for the active tab's pane is the ground truth.
+        let view = compute_tab_surface(&app, &registry, area, false, Default::default());
+        let rendered = view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == active_root)
+            .expect("active pane is drawn");
+        let rt = app
+            .runtime_for_pane_in_workspace(&registry, 0, active_root)
+            .expect("active pane has a runtime");
+        let (rows, cols) = rt.current_size();
+        assert_eq!(
+            (rows, cols),
+            (rendered.inner_rect.height, rendered.inner_rect.width),
+            "the PTY must be sized to the rect it is rendered in, not the full surface"
+        );
+    }
 
     #[tokio::test]
     async fn a_pinned_pane_keeps_its_own_size_across_tab_switches() {
