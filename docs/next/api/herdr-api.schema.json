@@ -2797,6 +2797,24 @@
           ],
           "type": "object"
         },
+        "PanePinParams": {
+          "description": "Keep a pane visible and live while other tabs of its workspace are selected.",
+          "properties": {
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pinned": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pinned"
+          ],
+          "type": "object"
+        },
         "PaneProcessInfoParams": {
           "properties": {
             "pane_id": {
@@ -6001,6 +6019,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneReleaseAgentParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.pin",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PanePinParams"
             }
           },
           "required": [

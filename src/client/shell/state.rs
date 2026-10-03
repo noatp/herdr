@@ -523,6 +523,7 @@ pub(super) enum ClientContextMenuAction {
     SplitRight,
     SplitDown,
     Zoom,
+    TogglePin,
     ToggleRightClickPassthrough,
     ClosePane,
 }
@@ -547,6 +548,7 @@ pub(super) enum ClientContextMenuTarget {
         source_pane_id: Option<String>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+        pinned: bool,
     },
 }
 

@@ -1087,6 +1087,10 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
+    /// Whether this pane stays visible and live while other tabs are selected.
+    /// Optional so older clients and servers stay compatible.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2880,6 +2884,7 @@ mod tests {
                 foreground_cwd: Some("/repo".into()),
                 focused: true,
                 right_click_passthrough: false,
+                pinned: true,
             }],
             agents: Vec::new(),
             commands: vec![ClientShellCommand {

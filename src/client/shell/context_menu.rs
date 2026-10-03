@@ -54,6 +54,7 @@ impl ClientContextMenuOverlay {
                 source_pane_id,
                 has_manual_label,
                 right_click_passthrough,
+                pinned,
                 ..
             } => {
                 let mut items = vec![item("Rename pane", Action::RenamePane)];
@@ -67,6 +68,10 @@ impl ClientContextMenuOverlay {
                     item("Split right", Action::SplitRight),
                     item("Split down", Action::SplitDown),
                     item("Zoom", Action::Zoom),
+                    item(
+                        if *pinned { "Unpin pane" } else { "Pin pane" },
+                        Action::TogglePin,
+                    ),
                     item(
                         if *right_click_passthrough {
                             "Use Herdr right-click menu"
@@ -160,6 +165,7 @@ impl ClientShellState {
                 source_pane_id,
                 has_manual_label: pane.label.is_some(),
                 right_click_passthrough: pane.right_click_passthrough,
+                pinned: pane.pinned,
             },
             x,
             y,
@@ -206,12 +212,14 @@ impl ClientShellState {
                 workspace_id,
                 source_pane_id,
                 right_click_passthrough,
+                pinned,
                 ..
             } => self.activate_pane_context_action(
                 pane_id,
                 workspace_id,
                 source_pane_id,
                 right_click_passthrough,
+                pinned,
                 action,
                 outcome,
             ),
@@ -361,12 +369,14 @@ impl ClientShellState {
         workspace_id: String,
         source_pane_id: Option<String>,
         right_click_passthrough: bool,
+        pinned: bool,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
     ) {
         use crate::api::schema::{
-            Method, PaneInputSetParams, PaneRenameParams, PaneRightClickTarget, PaneSplitParams,
-            PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, SplitDirection,
+            Method, PaneInputSetParams, PanePinParams, PaneRenameParams, PaneRightClickTarget,
+            PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams,
+            SplitDirection,
         };
 
         match action {
@@ -433,6 +443,13 @@ impl ClientShellState {
                 Method::PaneZoom(PaneZoomParams {
                     pane_id: Some(pane_id),
                     mode: PaneZoomMode::Toggle,
+                }),
+                outcome,
+            ),
+            ClientContextMenuAction::TogglePin => self.push_endpoint_method(
+                Method::PanePin(PanePinParams {
+                    pane_id: Some(pane_id),
+                    pinned: !pinned,
                 }),
                 outcome,
             ),

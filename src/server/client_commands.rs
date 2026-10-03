@@ -28,6 +28,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.input.set",
     "pane.link.activate",
     "pane.link.resolve",
+    "pane.pin",
     "pane.rename",
     "pane.resize",
     "pane.scroll",
@@ -190,6 +191,27 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn pin_methods_are_advertised_to_client_shells() {
+        // The client hides any action whose method the server does not
+        // advertise, so a handler that exists but is missing here is dead from
+        // the UI's point of view.
+        for method in [Method::PanePin(crate::api::schema::PanePinParams {
+            pane_id: Some("w1:p1".into()),
+            pinned: true,
+        })] {
+            let name = crate::api::api_method_name(&method);
+            assert!(
+                supports_client_shell_method(&method),
+                "{name} must be advertised to client shells"
+            );
+            assert!(
+                CLIENT_SHELL_METHODS.contains(&name),
+                "{name} missing from CLIENT_SHELL_METHODS"
+            );
+        }
+    }
+
     fn collect_schema_refs(value: &serde_json::Value, refs: &mut BTreeSet<String>) {
         match value {
             serde_json::Value::Object(object) => {
@@ -296,6 +318,10 @@ mod tests {
         assert_eq!(
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
+        );
+        assert_eq!(
+            actual.remove("pane.pin").as_deref(),
+            Some("1da6a49e6bba6f9b2b76d7b9dd6f6ade6a21e174510207bc581187053b191621")
         );
 
         assert_eq!(

@@ -1100,6 +1100,36 @@ impl Workspace {
             .find_map(|tab| tab.panes.get_mut(&pane_id))
     }
 
+    /// Pinned panes of this workspace that are not already drawn by `tab_index`,
+    /// paired with the index of the tab that owns them.
+    ///
+    /// Ordered by tab index then layout order so the pinned set keeps a stable
+    /// arrangement across renders and tab switches. The owning tab index lets
+    /// the caller reuse that tab's layout geometry, so a pinned pane keeps the
+    /// position and size it has in its own tab.
+    pub fn pinned_panes_outside_tab(&self, tab_index: usize) -> Vec<(usize, PaneId)> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != tab_index)
+            .flat_map(|(index, tab)| {
+                tab.layout
+                    .pane_ids()
+                    .into_iter()
+                    .filter(|pane_id| tab.panes.get(pane_id).is_some_and(|pane| pane.pinned))
+                    .map(move |pane_id| (index, pane_id))
+            })
+            .collect()
+    }
+
+    /// Whether any pane in this workspace is pinned.
+    #[cfg(test)]
+    pub fn has_pinned_panes(&self) -> bool {
+        self.tabs
+            .iter()
+            .any(|tab| tab.panes.values().any(|pane| pane.pinned))
+    }
+
     pub fn terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
         self.tabs.iter().find_map(|tab| tab.terminal_id(pane_id))
     }
@@ -1427,6 +1457,74 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_panes_are_collected_from_other_tabs_only() {
+        let mut ws = Workspace::test_new("pins");
+        let active_pane = ws.tabs[0].root_pane;
+        let other_tab = ws.test_add_tab(Some("other"));
+        let other_pane = ws.tabs[other_tab].root_pane;
+
+        assert!(!ws.has_pinned_panes());
+        assert!(ws.pinned_panes_outside_tab(0).is_empty());
+
+        ws.pane_state_mut(other_pane).unwrap().pinned = true;
+        ws.pane_state_mut(active_pane).unwrap().pinned = true;
+
+        assert!(ws.has_pinned_panes());
+        // Viewing tab 0: only the pin from the other tab needs to be drawn over
+        // the active tab; the active tab's own pinned pane is already in its layout.
+        // Each entry carries the owning tab index so the caller can reuse that
+        // tab's geometry and keep the pinned pane's own size.
+        assert_eq!(
+            ws.pinned_panes_outside_tab(0),
+            vec![(other_tab, other_pane)]
+        );
+        assert_eq!(
+            ws.pinned_panes_outside_tab(other_tab),
+            vec![(0, active_pane)]
+        );
+    }
+
+    #[test]
+    fn unpinning_removes_a_pane_from_the_pinned_set() {
+        let mut ws = Workspace::test_new("unpin");
+        let other_tab = ws.test_add_tab(Some("other"));
+        let other_pane = ws.tabs[other_tab].root_pane;
+
+        ws.pane_state_mut(other_pane).unwrap().pinned = true;
+        assert_eq!(
+            ws.pinned_panes_outside_tab(0),
+            vec![(other_tab, other_pane)]
+        );
+
+        ws.pane_state_mut(other_pane).unwrap().pinned = false;
+        assert!(ws.pinned_panes_outside_tab(0).is_empty());
+        assert!(!ws.has_pinned_panes());
+    }
+
+    #[test]
+    fn every_pinned_pane_reports_the_tab_that_owns_its_geometry() {
+        let mut ws = Workspace::test_new("zoom-pins");
+        let other_tab = ws.test_add_tab(Some("other"));
+        // Give the background tab two panes and pin both.
+        ws.active_tab = other_tab;
+        let split_pane = ws.test_split(Direction::Horizontal);
+        let root_pane = ws.tabs[other_tab].root_pane;
+        ws.pane_state_mut(root_pane).unwrap().pinned = true;
+        ws.pane_state_mut(split_pane).unwrap().pinned = true;
+        ws.active_tab = 0;
+
+        let pinned = ws.pinned_panes_outside_tab(0);
+        assert_eq!(pinned.len(), 2);
+        // Both pins name the tab they live in, so each keeps the size it has
+        // there. Zoom is a presentation concern resolved during layout, not here.
+        assert!(pinned.iter().all(|(tab_idx, _)| *tab_idx == other_tab));
+        assert_eq!(
+            pinned.iter().map(|(_, pane)| *pane).collect::<Vec<_>>(),
+            ws.tabs[other_tab].layout.pane_ids()
+        );
+    }
 
     #[test]
     fn generated_workspace_ids_are_short_base32_handles() {

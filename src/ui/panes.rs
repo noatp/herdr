@@ -58,6 +58,17 @@ fn zoomed_pane_borders(app: &AppState, multi_pane: bool) -> Borders {
     }
 }
 
+/// Borders for a pinned pane. A pinned pane always sits next to the active tab,
+/// so it is bordered whenever borders are enabled at all, to keep the seam
+/// between the two regions visible.
+fn pinned_pane_borders(app: &AppState) -> Borders {
+    if app.pane_borders.shows_borders(true) {
+        Borders::ALL
+    } else {
+        Borders::NONE
+    }
+}
+
 /// Where a pane that is about to be created will sit in its tab.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum NewPanePlacement {
@@ -308,6 +319,79 @@ fn stable_scrollbar_gutter(
         .map(|_| gutter);
 
     (inner_rect, scrollbar_rect)
+}
+
+/// Geometry for pinned panes shown over the active tab.
+///
+/// Each pinned pane keeps the position and size it has in its own tab: the rect
+/// is taken from that tab's layout over the same `area`, so switching tabs does
+/// not move or resize a pinned pane. When `resize_panes` is set the runtime is
+/// resized exactly like a tab pane, so the child process sees correct
+/// dimensions while its own tab is in the background.
+pub(super) fn compute_pinned_pane_infos(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    ws_idx: usize,
+    pinned: &[(usize, crate::layout::PaneId)],
+    area: Rect,
+    resize_panes: bool,
+    cell_size: crate::kitty_graphics::HostCellSize,
+) -> Vec<PaneInfo> {
+    let borders = pinned_pane_borders(app);
+    let Some(workspace) = app.workspaces.get(ws_idx) else {
+        return Vec::new();
+    };
+    pinned
+        .iter()
+        .filter_map(|(tab_idx, pane_id)| {
+            let tab = workspace.tabs.get(*tab_idx)?;
+            // Reuse the owning tab's geometry so the pinned pane lands where it
+            // sits in that tab. A zoomed owner gives its zoom target the whole
+            // area, which is the size that tab would show it at.
+            let rect = if tab.zoomed {
+                (tab.layout.focused() == *pane_id).then_some(area)?
+            } else {
+                tab.layout
+                    .panes(area)
+                    .into_iter()
+                    .find(|info| info.id == *pane_id)
+                    .map(|info| info.rect)?
+            };
+            if rect.width == 0 || rect.height == 0 {
+                return None;
+            }
+            let pane_inner = pane_inner_rect(rect, borders);
+            let mut inner_rect = pane_inner;
+            let mut scrollbar_rect = None;
+            if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, *pane_id)
+            {
+                (inner_rect, scrollbar_rect) =
+                    stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
+                if resize_panes
+                    && workspace.terminal_id(*pane_id).is_some_and(|terminal_id| {
+                        !app.direct_attach_resize_locks.contains(terminal_id)
+                    })
+                {
+                    rt.resize(
+                        inner_rect.height,
+                        inner_rect.width,
+                        cell_size.width_px,
+                        cell_size.height_px,
+                    );
+                }
+            }
+            Some(PaneInfo {
+                id: *pane_id,
+                rect,
+                inner_rect,
+                scrollbar_rect,
+                borders,
+                // A pinned pane is never the active tab's focused pane; focus
+                // follows the usual rules and is applied by the caller.
+                is_focused: false,
+            })
+        })
+        .collect()
 }
 
 /// Resize every visible runtime in a tab to the geometry it would receive if the tab were selected.

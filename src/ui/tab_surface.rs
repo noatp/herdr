@@ -1,6 +1,8 @@
 use ratatui::{layout::Rect, Frame};
 
-use super::panes::{compute_pane_infos_for_tab, render_panes, resize_tab_panes};
+use super::panes::{
+    compute_pane_infos_for_tab, compute_pinned_pane_infos, render_panes, resize_tab_panes,
+};
 use crate::app::AppState;
 use crate::layout::{PaneInfo, SplitBorder};
 use crate::protocol::CursorState;
@@ -63,26 +65,47 @@ pub(crate) fn compute_tab_surface_for(
             .tabs
             .get(target.tab_index)
     });
+    // Pinned panes from other tabs of this workspace keep the geometry they
+    // have in their own tab, so the active tab is laid out in the full area and
+    // each pinned pane is drawn over it at its native position and size.
+    let pinned = target.map_or_else(Vec::new, |target| {
+        app.workspaces
+            .get(target.workspace_index)
+            .map(|workspace| workspace.pinned_panes_outside_tab(target.tab_index))
+            .unwrap_or_default()
+    });
+    let tab_area = area;
     let split_borders = tab
         .map(|tab| {
             if tab.zoomed {
                 Vec::new()
             } else {
-                tab.layout.splits(area)
+                tab.layout.splits(tab_area)
             }
         })
         .unwrap_or_default();
-    let pane_infos = target.map_or_else(Vec::new, |target| {
+    let mut pane_infos = target.map_or_else(Vec::new, |target| {
         compute_pane_infos_for_tab(
             app,
             terminal_runtimes,
             target.workspace_index,
             target.tab_index,
-            area,
+            tab_area,
             resize_panes,
             cell_size,
         )
     });
+    if let Some(target) = target {
+        pane_infos.extend(compute_pinned_pane_infos(
+            app,
+            terminal_runtimes,
+            target.workspace_index,
+            &pinned,
+            area,
+            resize_panes,
+            cell_size,
+        ));
+    }
 
     TabSurfaceLayout {
         target,
@@ -215,6 +238,76 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Direction;
     use ratatui::Terminal;
+
+    #[tokio::test]
+    async fn a_pinned_pane_keeps_its_own_size_across_tab_switches() {
+        // The pinned pane lives in tab 1 as the right half of a horizontal
+        // split. Viewing tab 0 must draw it at exactly that rect, so its size
+        // does not depend on which tab is active.
+        let mut workspace = Workspace::test_new("pin-size");
+        let other_tab = workspace.test_add_tab(Some("other"));
+        workspace.active_tab = other_tab;
+        let pinned = workspace.test_split(Direction::Horizontal);
+        workspace.insert_test_runtime(
+            pinned,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 8, b"PINNED"),
+        );
+        workspace.pane_state_mut(pinned).unwrap().pinned = true;
+
+        let area = Rect::new(0, 0, 100, 20);
+
+        // Size the pinned pane while its own tab is active.
+        workspace.active_tab = other_tab;
+        let mut app = AppState::test_new();
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.selected = 0;
+        let own_tab = compute_tab_surface(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let expected = own_tab
+            .pane_infos
+            .iter()
+            .find(|info| info.id == pinned)
+            .map(|info| (info.rect, info.inner_rect))
+            .expect("pinned pane is drawn in its own tab");
+
+        // Switch to tab 0; the pinned pane is now drawn as a pin.
+        app.workspaces[0].active_tab = 0;
+        app.view.pane_infos.clear();
+        let other_view = compute_tab_surface(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let actual = other_view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == pinned)
+            .map(|info| (info.rect, info.inner_rect))
+            .expect("pinned pane stays visible from another tab");
+
+        assert_eq!(
+            actual, expected,
+            "a pinned pane must keep the position and size it has in its own tab"
+        );
+        // It really is the right half, not the whole surface.
+        assert_eq!(actual.0.width, 50);
+        // The active tab still gets the full area, so its own pane is unaffected.
+        let active_root = app.workspaces[0].tabs[0].root_pane;
+        let active = other_view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == active_root)
+            .expect("active tab pane is drawn");
+        assert_eq!(active.rect.width, area.width);
+    }
 
     #[tokio::test]
     async fn explicit_surface_layout_drives_render_cursor_and_hyperlinks() {

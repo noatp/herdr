@@ -378,6 +378,106 @@ fn context_menus_capture_stable_targets_and_route_actions() {
 }
 
 #[test]
+fn right_clicking_a_pane_offers_pin_and_routes_it_through_the_endpoint_api() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+
+    let pane = state.hits.panes[0].rect;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: pane.x + 1,
+        row: pane.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    state.compose(106, 20).expect("pane context menu");
+
+    // An unpinned pane offers "Pin pane".
+    let pin_index = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => {
+            let items = menu.items();
+            let index = items
+                .iter()
+                .position(|item| item.action == ClientContextMenuAction::TogglePin)
+                .expect("pin item");
+            assert_eq!(items[index].label, "Pin pane");
+            index
+        }
+        _ => panic!("pane context menu"),
+    };
+
+    let pin = state.hits.context_menu_rows[pin_index].0;
+    let outcome =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: pin.x + 1,
+            row: pin.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+        panic!("pin context action should use endpoint API");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::PanePin(params)
+            if params.pane_id.as_deref() == Some("pane_1") && params.pinned
+    ));
+}
+
+#[test]
+fn right_clicking_an_already_pinned_pane_offers_unpin() {
+    let mut snapshot = snapshot();
+    for pane in &mut snapshot.panes {
+        pane.pinned = true;
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+
+    let pane = state.hits.panes[0].rect;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: pane.x + 1,
+        row: pane.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    state.compose(106, 20).expect("pane context menu");
+
+    let pin_index = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => {
+            let items = menu.items();
+            let index = items
+                .iter()
+                .position(|item| item.action == ClientContextMenuAction::TogglePin)
+                .expect("pin item");
+            assert_eq!(items[index].label, "Unpin pane");
+            index
+        }
+        _ => panic!("pane context menu"),
+    };
+
+    let pin = state.hits.context_menu_rows[pin_index].0;
+    let outcome =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: pin.x + 1,
+            row: pin.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+        panic!("unpin context action should use endpoint API");
+    };
+    // Toggling an already-pinned pane must request pinned = false.
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::PanePin(params)
+            if params.pane_id.as_deref() == Some("pane_1") && !params.pinned
+    ));
+}
+
+#[test]
 fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
