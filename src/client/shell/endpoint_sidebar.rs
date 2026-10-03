@@ -533,25 +533,8 @@ pub(super) fn render_expanded(
             &label,
             Style::default().fg(palette.overlay0),
         );
-        let attention = active_snapshot.is_some_and(super::global_menu::global_menu_attention);
-        let width = if attention { 8 } else { 6 }.min(workspace_area.width);
-        hits.global_launcher = Rect::new(
-            workspace_area.right().saturating_sub(width),
-            footer_y,
-            width,
-            1,
-        );
-        put_right_text(
-            buffer,
-            workspace_area,
-            footer_y,
-            if attention { "● menu" } else { "menu" },
-            Style::default().fg(if attention {
-                palette.accent
-            } else {
-                palette.overlay0
-            }),
-        );
+        // The global menu button lives in the tab bar, which stays visible when
+        // the sidebar is collapsed to zero width.
     }
     super::endpoint_agents::render_expanded(
         buffer,

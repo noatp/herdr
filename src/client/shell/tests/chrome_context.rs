@@ -87,9 +87,11 @@ fn focused_last_overflow_tab_shows_its_full_label() {
         let frame = state
             .compose(133, 20)
             .expect("reporter's overflowing strip");
+        // The tab strip now starts after the fixed menu button, so it spans
+        // less of the bar than it did when the button lived in the sidebar.
         assert_eq!(
             state.hits.new_tab.right() - state.hits.tab_scroll_left.x,
-            107
+            100
         );
         let rect = state
             .hits
@@ -475,6 +477,53 @@ fn right_clicking_an_already_pinned_pane_offers_unpin() {
         crate::api::schema::Method::PanePin(params)
             if params.pane_id.as_deref() == Some("pane_1") && !params.pinned
     ));
+}
+
+/// The global menu must stay reachable when the sidebar collapses to nothing,
+/// which is why the button lives in the tab bar rather than the sidebar footer.
+#[test]
+fn the_global_menu_button_survives_a_fully_hidden_sidebar() {
+    let mut config = Config::default();
+    config.ui.sidebar_collapsed_mode = crate::config::SidebarCollapsedModeConfig::Hidden;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.sidebar_collapsed = true;
+    state.compose(120, 30).expect("hidden sidebar shell");
+
+    let layout = state.config.layout(120, 30, true, 1, 24);
+    assert_eq!(
+        layout.sidebar.width, 0,
+        "hidden mode must leave the sidebar no width at all"
+    );
+    assert_eq!(layout.tab_bar.x, 0, "the tab bar starts at the left edge");
+
+    let launcher = state.hits.global_launcher;
+    assert!(
+        launcher.width > 0,
+        "the menu button must still be clickable with no sidebar"
+    );
+    assert_eq!(
+        launcher.y, layout.tab_bar.y,
+        "the button sits on the tab bar"
+    );
+    assert_eq!(
+        launcher.x, layout.tab_bar.x,
+        "the button is the tab bar's first item"
+    );
+
+    // Clicking it still opens the menu.
+    let open = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: launcher.x,
+        row: launcher.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(open.repaint, "the button responds to a click");
+    assert!(
+        matches!(state.overlay, Some(ClientShellOverlay::GlobalMenu(_))),
+        "clicking the tab bar button opens the global menu"
+    );
 }
 
 #[test]

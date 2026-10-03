@@ -38,6 +38,61 @@ pub(crate) fn render_tab_bar(
         .collect::<Vec<_>>();
     let content = tab_bar_content_area(snapshot, area);
     let mouse_chrome = config.mouse_capture;
+    // The global menu button is the first item of the tab bar, at a fixed
+    // position: it must stay reachable when the sidebar is collapsed to zero
+    // width, so it cannot live in the sidebar footer.
+    let (menu_area, content) = if mouse_chrome {
+        let attention = super::global_menu::global_menu_attention(snapshot);
+        let label_width: u16 = if attention { 8 } else { 6 };
+        // One trailing space separates the button from the first tab.
+        let reserved = label_width.saturating_add(1).min(content.width);
+        let menu = Rect::new(content.x, content.y, reserved.saturating_sub(1), 1);
+        (
+            (menu.width > 0).then_some((menu, attention)),
+            Rect {
+                x: content.x.saturating_add(reserved),
+                width: content.width.saturating_sub(reserved),
+                ..content
+            },
+        )
+    } else {
+        (None, content)
+    };
+    if let Some((menu, attention)) = menu_area {
+        hits.global_launcher = menu;
+        if attention {
+            // Two tone, matching the button's previous look: the badge draws
+            // attention, the label stays quiet.
+            put_text(
+                buffer,
+                menu.x,
+                menu.y,
+                menu.width.min(2),
+                "● ",
+                Style::default()
+                    .fg(palette.accent)
+                    .bg(palette.panel_bg)
+                    .add_modifier(Modifier::BOLD),
+            );
+            put_text(
+                buffer,
+                menu.x.saturating_add(2),
+                menu.y,
+                menu.width.saturating_sub(2),
+                "menu",
+                Style::default().fg(palette.overlay0).bg(palette.panel_bg),
+            );
+        } else {
+            put_text(
+                buffer,
+                menu.x,
+                menu.y,
+                menu.width,
+                "menu",
+                Style::default().fg(palette.overlay0).bg(palette.panel_bg),
+            );
+        }
+    }
     let new_tab_width = if mouse_chrome { NEW_TAB_WIDTH } else { 0 };
     let desired_total = desired_widths
         .iter()
