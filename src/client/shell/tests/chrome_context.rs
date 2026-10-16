@@ -483,8 +483,7 @@ fn right_clicking_an_already_pinned_pane_offers_unpin() {
 /// which is why the button lives in the tab bar rather than the sidebar footer.
 #[test]
 fn the_global_menu_button_survives_a_fully_hidden_sidebar() {
-    let mut config = Config::default();
-    config.ui.sidebar_collapsed_mode = crate::config::SidebarCollapsedModeConfig::Hidden;
+    let config = Config::default();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());

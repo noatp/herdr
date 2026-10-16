@@ -137,8 +137,8 @@ pub enum HostCursorModeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarCollapsedModeConfig {
-    #[default]
     Compact,
+    #[default]
     Hidden,
 }
 
@@ -944,7 +944,7 @@ pub struct UiConfig {
     pub sidebar_max_width: u16,
     /// Start with the sidebar collapsed. Default: false.
     pub sidebar_start_collapsed: bool,
-    /// Collapsed sidebar presentation. Default: compact.
+    /// Collapsed sidebar presentation. Default: hidden.
     pub sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
@@ -1199,7 +1199,7 @@ impl Default for UiConfig {
             sidebar_min_width: 18,
             sidebar_max_width: 36,
             sidebar_start_collapsed: false,
-            sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
+            sidebar_collapsed_mode: SidebarCollapsedModeConfig::Hidden,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,
@@ -1702,21 +1702,21 @@ sidebar_start_collapsed = true
     }
 
     #[test]
-    fn sidebar_collapsed_mode_defaults_compact_and_parses_hidden() {
+    fn sidebar_collapsed_mode_defaults_hidden_and_parses_compact() {
         let default_config = Config::default();
         assert_eq!(
             default_config.ui.sidebar_collapsed_mode,
-            SidebarCollapsedModeConfig::Compact
+            SidebarCollapsedModeConfig::Hidden
         );
 
         let toml = r#"
 [ui]
-sidebar_collapsed_mode = "hidden"
+sidebar_collapsed_mode = "compact"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(
             config.ui.sidebar_collapsed_mode,
-            SidebarCollapsedModeConfig::Hidden
+            SidebarCollapsedModeConfig::Compact
         );
     }
 

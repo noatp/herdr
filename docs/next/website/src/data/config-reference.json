@@ -886,7 +886,7 @@
         {
           "key": "ui.sidebar_collapsed_mode",
           "type": "enum",
-          "default": "compact",
+          "default": "hidden",
           "description": "Collapsed sidebar presentation.",
           "values": [
             "compact",
