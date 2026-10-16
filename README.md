@@ -41,6 +41,66 @@ https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 
 ## install
 
+### custom fork (macOS Apple Silicon)
+
+This fork's custom UI lives on `feature/pinned-panes`, including pinned panes
+and the global menu button in the tab bar. Build that branch to use these changes.
+
+Install Rust if needed, accepting the default installation:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+Install Zig **0.16.0**, which this checkout requires:
+
+```bash
+mkdir -p "$HOME/.local/opt" "$HOME/.local/bin"
+curl -fL https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz \
+  -o /tmp/zig-0.16.0.tar.xz
+tar -xJf /tmp/zig-0.16.0.tar.xz -C "$HOME/.local/opt"
+ln -sf "$HOME/.local/opt/zig-aarch64-macos-0.16.0/zig" "$HOME/.local/bin/zig"
+export PATH="$HOME/.local/bin:$PATH"
+zig version
+```
+
+Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` so future terminals
+can find Zig and your custom Herdr binary.
+
+For a fresh checkout:
+
+```bash
+git clone --branch feature/pinned-panes https://github.com/noatp/herdr.git
+cd herdr
+```
+
+For an existing checkout of this fork, run `git fetch origin`, then
+`git switch feature/pinned-panes`. Build and install from that directory:
+
+```bash
+cargo build --release --locked &&
+  install -m 755 target/release/herdr "$HOME/.local/bin/herdr"
+command -v herdr
+```
+
+`command -v herdr` should show `$HOME/.local/bin/herdr` with your home directory
+expanded. These commands do not require `just`.
+
+If Herdr is already running, save your work and run the following from a terminal
+outside Herdr. **Stopping the server terminates its running panes and processes.**
+
+```bash
+"$HOME/.local/bin/herdr" server stop
+"$HOME/.local/bin/herdr"
+```
+
+Right-click a pane to pin it. After future code changes, repeat the build and
+install commands, then restart the server. Avoid `herdr update` for this custom
+installation because it may replace the binary with an official release.
+
+### official release
+
 ```bash
 curl -fsSL https://herdr.dev/install.sh | sh
 ```
